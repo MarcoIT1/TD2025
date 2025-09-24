@@ -55,4 +55,20 @@ EOF
 echo "[INFO] Restarting squid..."
 systemctl restart squid
 
-echo "[DONE] Squid is installed and blocking www.maclife.com"
+echo "[DONE] Squid is installed and blocking www.maclife.com
+
+function " {
+	function #statements {
+		#statements
+	}
+	
+}
+
+LOG_TAG="K8S-SETUP"
+ 
+log() {
+    echo "$1" | tee >(logger -t "$LOG_TAG")
+}
+ 
+exec > >(tee >(logger -t "$LOG_TAG")) 2>&1  # Redirect all output to syslog and terminal
+
