@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-echo "Hello from Azure Custom Script Extension! $(date)" | sudo tee /var/tmp/azure-test.txt
+LOGFILE="/var/log/px-test.log"
+exec > >(tee -a "$LOGFILE") 2>&1
+
+echo "[INFO] PX test script started at $(date)"
+
+# Try to create folder as root
+sudo mkdir -p /opt/px-test-folder
+sudo chmod 777 /opt/px-test-folder
+
+echo "[INFO] Folder /opt/px-test-folder created"
+echo "[INFO] PX test script finished at $(date)"
