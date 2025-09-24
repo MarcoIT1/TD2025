@@ -1,40 +1,56 @@
-# block_trendvision.ps1
-# This script blocks only Trend Vision One communication endpoints.
-# Run as Administrator.
+# --- Step 1: Remove host overrides ---
+$hostsFile   = "$env:SystemRoot\System32\drivers\etc\hosts"
+$backupHosts = "$hostsFile.bak.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 
-param(
-    [string[]] $BlockedFQDNs = @(
-        "api.eu.xdr.trendmicro.com",
-        "*.service-gateway.trendmicro.com",
-        "agents.eu.xdr.trendmicro.com",
-        "tm-auth.eu.trendmicro.com"
-        # add the full list from Trend Vision One documentation
-    ),
-    [int[]] $BlockedPorts = @(80, 443),
-    [string[]] $BlockedIPs = @(
-        # If Trend lists raw IP addresses in their firewall exceptions doc, add them here
-        # Example:
-        # "52.123.45.67",
-        # "18.234.56.78"
-    )
+$trendHosts = @(
+    "api.eu.xdr.trendmicro.com",
+    "api.xdr.trendmicro.com",
+    "xpx-eu.trendmicro.com",
+    "xpx.trendmicro.com",
+    "visionone.trendmicro.com"
 )
 
-Write-Output "Blocking Trend Vision One communication endpoints..."
+if (Test-Path $hostsFile) {
+    Copy-Item $hostsFile $backupHosts -Force
 
-# 1. Block by IPs (if provided)
-foreach ($ip in $BlockedIPs) {
-    foreach ($port in $BlockedPorts) {
-        New-NetFirewallRule -DisplayName "Block Trend IP $ip:$port" `
-            -Direction Outbound -Action Block -Protocol TCP `
-            -RemoteAddress $ip -RemotePort $port -Profile Any
+    # Remove read-only attribute if set
+    Attrib -R $hostsFile
+
+    $lines = Get-Content $hostsFile
+    $filtered = $lines | Where-Object {
+        $keep = $true
+        foreach ($h in $trendHosts) {
+            if ($_ -match $h) { $keep = $false; break }
+        }
+        $keep
     }
+
+    # Rewrite safely
+    $filtered | Out-File -FilePath $hostsFile -Encoding ASCII -Force
 }
 
-# 2. Block by FQDNs (requires Windows 10 / Server 2019+ for FQDN rules)
-foreach ($fqdn in $BlockedFQDNs) {
-    foreach ($port in $BlockedPorts) {
-        New-NetFirewallRule -DisplayName "Block Trend FQDN $fqdn:$port" `
-            -Direction Outbound -Action Block -Protocol TCP `
-            -RemoteAddress $fqdn -RemotePort $port -Profile Any
+# --- Step 2: Block AWS eu-central-1 ranges ---
+$AwsIpRangesUrl = "https://ip-ranges.amazonaws.com/ip-ranges.json"
+$Region    = "eu-central-1"
+$RulePrefix = "Block AWS $Region"
+
+try {
+    $json = Invoke-RestMethod -Uri $AwsIpRangesUrl -UseBasicParsing
+}
+catch {
+    exit 1
+}
+
+$prefixes = $json.prefixes | Where-Object {
+    $_.region -eq $Region -and $_.service -eq "AMAZON"
+} | Select-Object -ExpandProperty ip_prefix -Unique
+
+foreach ($prefix in $prefixes) {
+    $ruleName = "$RulePrefix $prefix"
+    $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+    if ($null -eq $existing) {
+        New-NetFirewallRule -DisplayName $ruleName `
+            -Direction Outbound -Action Block -Enabled True `
+            -RemoteAddress $prefix | Out-Null
     }
 }
