@@ -24,6 +24,10 @@ try {
     netsh winhttp set proxy $proxyAddress | Out-Null
     Write-Output "System (WinHTTP) proxy set to $proxyAddress"
 
+    # --- 4. Apply immediately ---
+    gpupdate /target:computer /force | Out-Null
+    rundll32.exe inetcpl.cpl,LaunchConnectionDialog
+
     Write-Output "Proxy successfully configured globally (all users)."
     exit 0
 }
