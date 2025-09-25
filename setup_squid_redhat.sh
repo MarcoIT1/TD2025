@@ -1,27 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- Install and enable squid ---
-dnf -y install squid
-systemctl enable --now squid
+# --- Install Squid ---
+echo "[*] Installing Squid..."
+sudo yum install -y squid
+
+# --- Enable and start Squid ---
+echo "[*] Enabling and starting Squid service..."
+sudo systemctl enable squid
+sudo systemctl start squid
 
 # --- Paths ---
 SQUID_CONF="/etc/squid/squid.conf"
 BACKUP_CONF="/etc/squid/squid.conf.bak.$(date +%s)"
 
-# --- Backup the config ---
-cp "$SQUID_CONF" "$BACKUP_CONF"
+# --- Backup config ---
+echo "[*] Backing up current squid.conf -> $BACKUP_CONF"
+sudo cp "$SQUID_CONF" "$BACKUP_CONF"
 
-# --- Define LAN network (adjust to your network) ---
+# --- Define LAN network (adjust if needed) ---
 LAN_NET="10.0.0.0/24"
 
-# --- Rewrite squid.conf minimal rules ---
-tee "$SQUID_CONF" > /dev/null <<EOF
+# --- Write minimal config ---
+echo "[*] Writing new squid.conf..."
+sudo tee "$SQUID_CONF" > /dev/null <<EOF
 # Squid minimal config (RHEL version)
 
 http_port 3128
 
-acl localnet src ${LAN_NET}
+acl localnet src $LAN_NET
 acl blocked_sites dstdomain .maclife.de
 
 acl SSL_ports port 443
@@ -41,5 +48,13 @@ http_access allow localnet
 http_access deny all
 EOF
 
-# --- Restart squid ---
-systemctl restart squid
+# --- Open firewall port ---
+echo "[*] Opening firewall for Squid (3128/tcp)..."
+sudo firewall-cmd --add-port=3128/tcp --permanent
+sudo firewall-cmd --reload
+
+# --- Restart Squid ---
+echo "[*] Restarting Squid with new config..."
+sudo systemctl restart squid
+
+echo "[*] Setup complete. Check with: tail -f /var/log/squid/access.log"
