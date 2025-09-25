@@ -25,7 +25,7 @@ tee "$SQUID_CONF" > /dev/null <<'EOF'
 http_port 3128
 
 acl localnet src 10.0.0.0/24
-acl blocked_sites dstdomain .maclife.com
+acl blocked_sites dstdomain .maclife.de
 
 acl SSL_ports port 443
 acl Safe_ports port 80
