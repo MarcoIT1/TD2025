@@ -26,7 +26,6 @@ try {
 
     # --- 4. Apply immediately ---
     gpupdate /target:computer /force | Out-Null
-    rundll32.exe inetcpl.cpl,LaunchConnectionDialog
 
     Write-Output "Proxy successfully configured globally (all users)."
     exit 0
