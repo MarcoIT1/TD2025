@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # =============================================================================
-# SQUID SSL BUMPING SETUP SCRIPT (Complete Installation)
+# SQUID SSL BUMPING SETUP SCRIPT (Complete Installation - Password-Free)
 # =============================================================================
 # Description: Automated setup for Squid proxy with SSL bumping capability
 # Author: Assistant
-# Version: 2.0 - Now includes Squid installation
+# Version: 2.1 - Password-free execution with sudo credential caching
 # =============================================================================
 
 set -e  # Exit on any error
@@ -48,7 +48,27 @@ check_root() {
     fi
 }
 
-# Function to check sudo privileges
+# Function to maintain sudo credentials
+maintain_sudo() {
+    # Start a background process to refresh sudo credentials
+    while true; do
+        sleep 60
+        sudo -n true 2>/dev/null || break
+    done &
+    SUDO_PID=$!
+    
+    # Clean up function
+    cleanup_sudo() {
+        if [[ -n $SUDO_PID ]]; then
+            kill $SUDO_PID 2>/dev/null || true
+        fi
+    }
+    
+    # Set trap to clean up on exit
+    trap cleanup_sudo EXIT
+}
+
+# Function to check sudo privileges and maintain them
 check_sudo() {
     print_status "Checking sudo privileges..."
     if sudo -n true 2>/dev/null; then
@@ -58,6 +78,10 @@ check_sudo() {
         sudo true
         print_success "Sudo privileges confirmed"
     fi
+    
+    # Start maintaining sudo credentials
+    maintain_sudo
+    print_status "Sudo credentials will be maintained automatically"
 }
 
 # Function to detect OS
@@ -88,16 +112,16 @@ install_squid() {
     case $OS in
         ubuntu|debian)
             print_status "Updating package list..."
-            sudo apt update
+            sudo -n apt update
             print_status "Installing Squid proxy server..."
-            sudo apt install squid openssl -y
+            sudo -n apt install squid openssl -y
             ;;
         centos|rhel|fedora)
             print_status "Installing Squid proxy server..."
             if command -v dnf &> /dev/null; then
-                sudo dnf install squid openssl -y
+                sudo -n dnf install squid openssl -y
             else
-                sudo yum install squid openssl -y
+                sudo -n yum install squid openssl -y
             fi
             ;;
         *)
@@ -114,12 +138,12 @@ install_squid() {
         
         # Enable squid service
         print_status "Enabling Squid service..."
-        sudo systemctl enable squid
+        sudo -n systemctl enable squid
         
         # Start squid service if not running
-        if ! sudo systemctl is-active --quiet squid; then
+        if ! sudo -n systemctl is-active --quiet squid; then
             print_status "Starting Squid service..."
-            sudo systemctl start squid
+            sudo -n systemctl start squid
         fi
         
         print_success "Squid service is enabled and running"
@@ -133,7 +157,7 @@ install_squid() {
 backup_config() {
     print_status "Backing up original squid configuration..."
     if [[ ! -f /etc/squid/squid.conf.original ]]; then
-        sudo cp /etc/squid/squid.conf /etc/squid/squid.conf.original
+        sudo -n cp /etc/squid/squid.conf /etc/squid/squid.conf.original
         print_success "Configuration backed up to /etc/squid/squid.conf.original"
     else
         print_warning "Backup already exists at /etc/squid/squid.conf.original"
@@ -143,7 +167,7 @@ backup_config() {
 # Function to create SSL certificate directory
 create_ssl_directory() {
     print_status "Creating SSL certificate directory..."
-    sudo mkdir -p /etc/squid/ssl_cert
+    sudo -n mkdir -p /etc/squid/ssl_cert
     print_success "SSL certificate directory created"
 }
 
@@ -151,7 +175,7 @@ create_ssl_directory() {
 generate_ca_key() {
     print_status "Generating CA private key (4096 bits)..."
     if [[ ! -f /etc/squid/ssl_cert/squid-ca-key.pem ]]; then
-        sudo openssl genrsa -out /etc/squid/ssl_cert/squid-ca-key.pem 4096
+        sudo -n openssl genrsa -out /etc/squid/ssl_cert/squid-ca-key.pem 4096
         print_success "CA private key generated"
     else
         print_warning "CA private key already exists"
@@ -162,7 +186,7 @@ generate_ca_key() {
 generate_ca_cert() {
     print_status "Generating CA certificate..."
     if [[ ! -f /etc/squid/ssl_cert/squid-ca-cert.pem ]]; then
-        sudo openssl req -new -x509 -days 3650 \
+        sudo -n openssl req -new -x509 -days 3650 \
             -key /etc/squid/ssl_cert/squid-ca-key.pem \
             -out /etc/squid/ssl_cert/squid-ca-cert.pem \
             -utf8 \
@@ -176,20 +200,20 @@ generate_ca_cert() {
 # Function to set proper permissions
 set_permissions() {
     print_status "Setting proper permissions..."
-    sudo chown -R proxy:proxy /etc/squid/ssl_cert/
-    sudo chmod 400 /etc/squid/ssl_cert/squid-ca-key.pem
-    sudo chmod 444 /etc/squid/ssl_cert/squid-ca-cert.pem
+    sudo -n chown -R proxy:proxy /etc/squid/ssl_cert/
+    sudo -n chmod 400 /etc/squid/ssl_cert/squid-ca-key.pem
+    sudo -n chmod 444 /etc/squid/ssl_cert/squid-ca-cert.pem
     print_success "Permissions set correctly"
 }
 
 # Function to create SSL database
 create_ssl_database() {
     print_status "Creating SSL certificate database..."
-    sudo mkdir -p /var/lib/squid/ssl_db
+    sudo -n mkdir -p /var/lib/squid/ssl_db
     
     if [[ ! -f /var/lib/squid/ssl_db/index.txt ]]; then
-        sudo /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB
-        sudo chown -R proxy:proxy /var/lib/squid/ssl_db
+        sudo -n /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB
+        sudo -n chown -R proxy:proxy /var/lib/squid/ssl_db
         print_success "SSL database created and initialized"
     else
         print_warning "SSL database already exists"
@@ -206,7 +230,7 @@ add_ssl_config() {
         return 0
     fi
     
-    sudo tee -a /etc/squid/squid.conf << 'EOF'
+    sudo -n tee -a /etc/squid/squid.conf << 'EOF'
 
 # SSL Bump Configuration
 http_port 3129 ssl-bump generate-host-certificates=on dynamic_cert_mem_cache_size=4MB cert=/etc/squid/ssl_cert/squid-ca-cert.pem key=/etc/squid/ssl_cert/squid-ca-key.pem
@@ -232,7 +256,7 @@ EOF
 # Function to test configuration
 test_config() {
     print_status "Testing squid configuration..."
-    if sudo squid -k parse; then
+    if sudo -n squid -k parse; then
         print_success "Configuration syntax is valid"
         return 0
     else
@@ -244,12 +268,12 @@ test_config() {
 # Function to restart squid service
 restart_squid() {
     print_status "Restarting squid service..."
-    if sudo systemctl restart squid; then
+    if sudo -n systemctl restart squid; then
         print_success "Squid service restarted successfully"
         sleep 2
         
         # Check service status
-        if sudo systemctl is-active --quiet squid; then
+        if sudo -n systemctl is-active --quiet squid; then
             print_success "Squid service is running"
         else
             print_error "Squid service failed to start"
@@ -298,7 +322,7 @@ verify_setup() {
     
     # Show service status
     print_status "Current Squid service status:"
-    sudo systemctl status squid --no-pager -l
+    sudo -n systemctl status squid --no-pager -l
 }
 
 # Function to show final information
@@ -371,7 +395,7 @@ main() {
     else
         print_error "Setup failed due to configuration errors"
         print_status "Restoring original configuration..."
-        sudo cp /etc/squid/squid.conf.original /etc/squid/squid.conf
+        sudo -n cp /etc/squid/squid.conf.original /etc/squid/squid.conf
         exit 1
     fi
     
