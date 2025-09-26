@@ -1,11 +1,44 @@
 #!/bin/bash
 
-# Complete Squid SSL Bump Proxy Setup Script
+# Complete Squid SSL Bump Proxy Setup Script with Auto-Reboot
 # For Ubuntu 22.04 LTS with squid-openssl
 # Author: System Administrator
-# Version: 2.0
+# Version: 3.0
+# Usage: ./squid-ssl-setup.sh [--auto-reboot] [--continue]
 
 set -e
+
+# Script arguments
+AUTO_REBOOT=false
+CONTINUE_SETUP=false
+SKIP_UPDATE=false
+
+# Parse command line arguments
+for arg in "$@"; do
+    case $arg in
+        --auto-reboot)
+            AUTO_REBOOT=true
+            shift
+            ;;
+        --continue)
+            CONTINUE_SETUP=true
+            SKIP_UPDATE=true
+            shift
+            ;;
+        --help)
+            echo "Usage: $0 [--auto-reboot] [--continue]"
+            echo "  --auto-reboot    Automatically reboot if kernel update requires it"
+            echo "  --continue       Continue setup after reboot (internal use)"
+            echo "  --help          Show this help message"
+            exit 0
+            ;;
+    esac
+done
+
+# Set non-interactive mode to avoid prompts
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
 
 echo "🚀 Starting Complete Squid SSL Bump Setup..."
 echo "=============================================="
@@ -33,10 +66,81 @@ if [[ $EUID -eq 0 ]]; then
    exit 1
 fi
 
-# Update system packages
-print_status "Updating system packages..."
-sudo apt update
-sudo apt upgrade -y
+# Handle continuation after reboot
+if [ "$CONTINUE_SETUP" = "true" ]; then
+    print_status "Continuing setup after system reboot..."
+    # Clean up the cron job
+    sudo crontab -r 2>/dev/null || true
+    # Remove continuation script
+    rm -f /tmp/continue_squid_setup.sh 2>/dev/null || true
+    print_success "Resumed after kernel update reboot"
+fi
+
+# System update and reboot handling
+if [ "$SKIP_UPDATE" != "true" ]; then
+    print_status "Updating system packages (non-interactive mode)..."
+    sudo apt update
+    sudo apt upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+    
+    print_success "System packages updated successfully"
+    
+    # Check if reboot is required
+    if [ -f /var/run/reboot-required ]; then
+        print_warning "System reboot required for kernel update"
+        
+        if [ "$AUTO_REBOOT" = "true" ]; then
+            print_status "Auto-reboot enabled. Preparing continuation script..."
+            
+            # Get the full path of this script
+            SCRIPT_PATH="$(readlink -f "$0")"
+            SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+            CONTINUE_SCRIPT="/tmp/continue_squid_setup.sh"
+            
+            # Create continuation script
+            cat > "$CONTINUE_SCRIPT" << EOF
+#!/bin/bash
+# Auto-generated continuation script
+sleep 30
+cd "$SCRIPT_DIR"
+"$SCRIPT_PATH" --continue
+EOF
+            chmod +x "$CONTINUE_SCRIPT"
+            
+            # Schedule continuation after reboot using cron
+            (sudo crontab -l 2>/dev/null || true; echo "@reboot $CONTINUE_SCRIPT") | sudo crontab -
+            
+            print_status "Continuation scheduled. Rebooting in 15 seconds..."
+            print_status "The script will automatically continue after reboot."
+            
+            # Countdown
+            for i in {15..1}; do
+                echo -ne "\rRebooting in $i seconds... "
+                sleep 1
+            done
+            echo ""
+            
+            sudo reboot
+            exit 0
+            
+        else
+            print_warning "Kernel update requires reboot but auto-reboot is disabled."
+            print_status "Options:"
+            print_status "1. Run: sudo reboot"
+            print_status "2. Re-run script with: $0 --auto-reboot"
+            print_status "3. Continue anyway (not recommended)"
+            
+            read -p "Continue without reboot? (y/N): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_status "Please reboot and run the script again, or use --auto-reboot flag"
+                exit 1
+            fi
+            print_warning "Continuing without reboot - some features may not work optimally"
+        fi
+    else
+        print_success "No reboot required - continuing with installation"
+    fi
+fi
 
 # Install required packages
 print_status "Installing Squid with SSL support and dependencies..."
@@ -215,7 +319,7 @@ sudo systemctl start squid
 sudo systemctl enable squid
 
 # Wait a moment for service to start
-sleep 3
+sleep 5
 
 # Check service status
 print_status "Verifying Squid service status..."
@@ -239,6 +343,9 @@ else
     sudo tail -20 /var/log/squid/cache.log 2>/dev/null || echo "No cache log available"
     exit 1
 fi
+
+# Clean up any remaining cron jobs
+sudo crontab -r 2>/dev/null || true
 
 # Display final configuration summary
 echo ""
@@ -275,3 +382,10 @@ echo "  sudo ufw allow 3129"
 echo "=============================================="
 
 print_success "Squid SSL Bump Proxy setup completed successfully!"
+
+# Show usage information
+echo ""
+echo "📋 Script Usage:"
+echo "  $0                    # Interactive mode"
+echo "  $0 --auto-reboot      # Fully automated with auto-reboot"
+echo "  $0 --help            # Show help"
