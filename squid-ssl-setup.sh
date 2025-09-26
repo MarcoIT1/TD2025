@@ -1,239 +1,295 @@
-# Create the optimized setup script (no full system upgrade)
-cat > squid-ssl-setup.sh << 'EOF'
 #!/bin/bash
 
-# Better error handling - only exit on undefined variables
-set -u
+# =============================================================================
+# SQUID SSL BUMPING SETUP SCRIPT
+# =============================================================================
+# Description: Automated setup for Squid proxy with SSL bumping capability
+# Author: Assistant
+# Version: 1.0
+# =============================================================================
 
-echo "🚀 Starting Fresh Squid SSL Setup..."
-echo "===================================="
+set -e  # Exit on any error
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
 # Function to print colored output
 print_status() {
-    echo -e "\033[1;34m[INFO]\033[0m $1"
+    echo -e "${BLUE}[INFO]${NC} $1"
 }
 
 print_success() {
-    echo -e "\033[1;32m[SUCCESS]\033[0m $1"
-}
-
-print_error() {
-    echo -e "\033[1;31m[ERROR]\033[0m $1"
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
 print_warning() {
-    echo -e "\033[1;33m[WARNING]\033[0m $1"
+    echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
-# Check if running as root
-if [[ $EUID -ne 0 ]]; then
-   print_error "This script must be run as root (use sudo)"
-   exit 1
-fi
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
 
-# Set non-interactive mode
-export DEBIAN_FRONTEND=noninteractive
+print_header() {
+    echo -e "\n${BLUE}==============================================================================${NC}"
+    echo -e "${BLUE} $1${NC}"
+    echo -e "${BLUE}==============================================================================${NC}\n"
+}
 
-# Update package list only (not full system upgrade)
-print_status "Updating package list..."
-apt update
-print_success "Package list updated"
+# Function to check if running as root
+check_root() {
+    if [[ $EUID -eq 0 ]]; then
+        print_error "This script should not be run as root. Please run as a regular user with sudo privileges."
+        exit 1
+    fi
+}
 
-# Install required packages
-print_status "Installing Squid with SSL support and dependencies..."
-apt install -y squid openssl curl net-tools
-print_success "Packages installed successfully"
+# Function to check if squid is installed
+check_squid() {
+    if ! command -v squid &> /dev/null; then
+        print_error "Squid is not installed. Please install squid first:"
+        echo "  sudo apt update && sudo apt install squid -y"
+        exit 1
+    fi
+}
 
-# Stop any existing squid (with proper error handling)
-print_status "Stopping any existing Squid service..."
-systemctl stop squid 2>/dev/null || true
-systemctl disable squid 2>/dev/null || true
-pkill -f squid 2>/dev/null || true
-sleep 2
+# Function to backup original configuration
+backup_config() {
+    print_status "Backing up original squid configuration..."
+    if [[ ! -f /etc/squid/squid.conf.original ]]; then
+        sudo cp /etc/squid/squid.conf /etc/squid/squid.conf.original
+        print_success "Configuration backed up to /etc/squid/squid.conf.original"
+    else
+        print_warning "Backup already exists at /etc/squid/squid.conf.original"
+    fi
+}
 
-# Backup original config if exists
-if [ -f /etc/squid/squid.conf ]; then
-    cp /etc/squid/squid.conf /etc/squid/squid.conf.backup.$(date +%Y%m%d_%H%M%S)
-    print_status "Original config backed up"
-fi
+# Function to create SSL certificate directory
+create_ssl_directory() {
+    print_status "Creating SSL certificate directory..."
+    sudo mkdir -p /etc/squid/ssl_cert
+    print_success "SSL certificate directory created"
+}
 
-# Clean up existing files
-print_status "Cleaning up existing configuration..."
-rm -f /run/squid.pid 2>/dev/null || true
-rm -f /var/lock/squid* 2>/dev/null || true
+# Function to generate CA private key
+generate_ca_key() {
+    print_status "Generating CA private key (4096 bits)..."
+    if [[ ! -f /etc/squid/ssl_cert/squid-ca-key.pem ]]; then
+        sudo openssl genrsa -out /etc/squid/ssl_cert/squid-ca-key.pem 4096
+        print_success "CA private key generated"
+    else
+        print_warning "CA private key already exists"
+    fi
+}
 
-# Create SSL certificate directory
-print_status "Creating SSL certificate directory..."
-mkdir -p /etc/squid/ssl_cert
-mkdir -p /var/lib/squid/ssl_db
-mkdir -p /var/log/squid
+# Function to generate CA certificate
+generate_ca_cert() {
+    print_status "Generating CA certificate..."
+    if [[ ! -f /etc/squid/ssl_cert/squid-ca-cert.pem ]]; then
+        sudo openssl req -new -x509 -days 3650 \
+            -key /etc/squid/ssl_cert/squid-ca-key.pem \
+            -out /etc/squid/ssl_cert/squid-ca-cert.pem \
+            -utf8 \
+            -subj "/C=IE/ST=Cork/L=Cork/O=TM/OU=TS/CN=Squid CA"
+        print_success "CA certificate generated"
+    else
+        print_warning "CA certificate already exists"
+    fi
+}
 
-# Generate SSL certificate
-print_status "Generating SSL certificate..."
-openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
-    -keyout /etc/squid/ssl_cert/squid.pem \
-    -out /etc/squid/ssl_cert/squid.pem \
-    -subj "/C=US/ST=State/L=City/O=ProxyServer/OU=IT/CN=squid-proxy.local"
+# Function to set proper permissions
+set_permissions() {
+    print_status "Setting proper permissions..."
+    sudo chown -R proxy:proxy /etc/squid/ssl_cert/
+    sudo chmod 400 /etc/squid/ssl_cert/squid-ca-key.pem
+    sudo chmod 444 /etc/squid/ssl_cert/squid-ca-cert.pem
+    print_success "Permissions set correctly"
+}
 
-print_success "SSL certificate generated"
+# Function to create SSL database
+create_ssl_database() {
+    print_status "Creating SSL certificate database..."
+    sudo mkdir -p /var/lib/squid/ssl_db
+    
+    if [[ ! -f /var/lib/squid/ssl_db/index.txt ]]; then
+        sudo /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB
+        sudo chown -R proxy:proxy /var/lib/squid/ssl_db
+        print_success "SSL database created and initialized"
+    else
+        print_warning "SSL database already exists"
+    fi
+}
 
-# Set proper permissions
-chown -R proxy:proxy /etc/squid/ssl_cert
-chown -R proxy:proxy /var/lib/squid/ssl_db
-chown -R proxy:proxy /var/log/squid
-chmod 600 /etc/squid/ssl_cert/squid.pem
-chmod 700 /etc/squid/ssl_cert
-chmod 700 /var/lib/squid/ssl_db
+# Function to add SSL bump configuration
+add_ssl_config() {
+    print_status "Adding SSL bump configuration..."
+    
+    # Check if SSL bump configuration already exists
+    if grep -q "SSL Bump Configuration" /etc/squid/squid.conf; then
+        print_warning "SSL bump configuration already exists in squid.conf"
+        return 0
+    fi
+    
+    sudo tee -a /etc/squid/squid.conf << 'EOF'
 
-print_status "Permissions set correctly"
+# SSL Bump Configuration
+http_port 3129 ssl-bump generate-host-certificates=on dynamic_cert_mem_cache_size=4MB cert=/etc/squid/ssl_cert/squid-ca-cert.pem key=/etc/squid/ssl_cert/squid-ca-key.pem
 
-# Create Squid configuration
-print_status "Creating Squid configuration..."
-cat > /etc/squid/squid.conf << 'CONFIG'
-# Squid SSL Bump Proxy Configuration
-# Basic proxy ports
-http_port 3128
-https_port 3129 cert=/etc/squid/ssl_cert/squid.pem ssl-bump intercept
-
-# SSL bump configuration
+# ACL for SSL bumping
 acl step1 at_step SslBump1
 acl step2 at_step SslBump2
 acl step3 at_step SslBump3
 
+# SSL bump rules
 ssl_bump peek step1
-ssl_bump peek step2
-ssl_bump splice step3
+ssl_bump bump step2
+ssl_bump bump step3
 
-# Network ACLs
-acl localnet src 10.0.0.0/8
-acl localnet src 172.16.0.0/12
-acl localnet src 192.168.0.0/16
-acl localnet src fc00::/7
-acl localnet src fe80::/10
-
-# Port ACLs
-acl SSL_ports port 443
-acl Safe_ports port 80
-acl Safe_ports port 21
-acl Safe_ports port 443
-acl Safe_ports port 70
-acl Safe_ports port 210
-acl Safe_ports port 1025-65535
-acl Safe_ports port 280
-acl Safe_ports port 488
-acl Safe_ports port 591
-acl Safe_ports port 777
-
-# Method ACLs
-acl CONNECT method CONNECT
-
-# Access control rules
-http_access deny !Safe_ports
-http_access deny CONNECT !SSL_ports
-http_access allow localhost manager
-http_access deny manager
-http_access allow localnet
-http_access allow localhost
-http_access deny all
-
-# Cache configuration
-cache_dir ufs /var/spool/squid 1000 16 256
-maximum_object_size 4096 KB
-cache_mem 256 MB
-coredump_dir /var/spool/squid
-
-# SSL certificate database
+# Cache directory for SSL certificates
 sslcrtd_program /usr/lib/squid/security_file_certgen -s /var/lib/squid/ssl_db -M 4MB
-sslcrtd_children 8 startup=1 idle=1
+sslcrtd_children 5
+EOF
 
-# Logging
-access_log /var/log/squid/access.log squid
-cache_log /var/log/squid/cache.log
-logfile_rotate 10
+    print_success "SSL bump configuration added to squid.conf"
+}
 
-# DNS
-dns_nameservers 8.8.8.8 8.8.4.4
-
-# Refresh patterns
-refresh_pattern ^ftp:           1440    20%     10080
-refresh_pattern ^gopher:        1440    0%      1440
-refresh_pattern -i (/cgi-bin/|\?) 0     0%      0
-refresh_pattern .               0       20%     4320
-CONFIG
-
-print_success "Configuration created"
-
-# Initialize SSL certificate database
-print_status "Initializing SSL certificate database..."
-/usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB
-chown -R proxy:proxy /var/lib/squid/ssl_db
-
-# Initialize squid cache
-print_status "Initializing Squid cache directories..."
-squid -z
-print_success "Cache directories initialized"
-
-# Start squid service
-print_status "Starting Squid service..."
-systemctl daemon-reload
-systemctl start squid
-systemctl enable squid
-
-# Wait for service to start
-sleep 5
-
-# Check service status
-if systemctl is-active --quiet squid; then
-    print_success "Squid is running successfully!"
-    
-    # Get server IP
-    SERVER_IP=$(hostname -I | awk '{print $1}')
-    
-    # Check listening ports
-    print_status "Checking listening ports..."
-    netstat -tlnp | grep -E ':(3128|3129)' || print_warning "Ports not yet visible in netstat"
-    
-    # Test the proxy
-    print_status "Testing proxy functionality..."
-    sleep 2
-    if timeout 10 curl -x "$SERVER_IP:3128" --connect-timeout 5 -s http://www.google.com -I > /dev/null 2>&1; then
-        print_success "HTTP proxy test passed!"
+# Function to test configuration
+test_config() {
+    print_status "Testing squid configuration..."
+    if sudo squid -k parse; then
+        print_success "Configuration syntax is valid"
+        return 0
     else
-        print_warning "HTTP proxy test - may need a moment to fully initialize"
+        print_error "Configuration syntax error detected!"
+        return 1
+    fi
+}
+
+# Function to restart squid service
+restart_squid() {
+    print_status "Restarting squid service..."
+    if sudo systemctl restart squid; then
+        print_success "Squid service restarted successfully"
+        sleep 2
+        
+        # Check service status
+        if sudo systemctl is-active --quiet squid; then
+            print_success "Squid service is running"
+        else
+            print_error "Squid service failed to start"
+            return 1
+        fi
+    else
+        print_error "Failed to restart squid service"
+        return 1
+    fi
+}
+
+# Function to verify setup
+verify_setup() {
+    print_status "Verifying SSL bumping setup..."
+    
+    # Check if ports are listening
+    if ss -tlnp | grep -q ":3128"; then
+        print_success "Regular proxy listening on port 3128"
+    else
+        print_warning "Port 3128 not listening"
     fi
     
-    echo ""
-    echo "🎉 SETUP COMPLETE!"
-    echo "=============================================="
-    echo "Server IP: $SERVER_IP"
-    echo ""
-    echo "Proxy Configuration:"
-    echo "  HTTP Proxy:  $SERVER_IP:3128"
-    echo "  HTTPS Proxy: $SERVER_IP:3129"
-    echo ""
-    echo "Test Commands:"
-    echo "  curl -x $SERVER_IP:3128 http://www.google.com -I"
-    echo "  curl -x $SERVER_IP:3128 -k https://www.google.com -I"
-    echo ""
-    echo "Status Commands:"
-    echo "  sudo systemctl status squid"
-    echo "  sudo tail -f /var/log/squid/access.log"
-    echo "  sudo tail -f /var/log/squid/cache.log"
-    echo "=============================================="
+    if ss -tlnp | grep -q ":3129"; then
+        print_success "SSL bumping proxy listening on port 3129"
+    else
+        print_warning "Port 3129 not listening"
+    fi
     
-else
-    print_error "Squid failed to start. Checking logs..."
-    echo ""
-    echo "=== Recent cache log entries ==="
-    tail -20 /var/log/squid/cache.log 2>/dev/null || echo "No cache log available yet"
-    echo ""
-    echo "=== Recent system log entries ==="
-    journalctl -u squid --no-pager -l -n 20
-    echo ""
-    echo "=== Squid service status ==="
-    systemctl status squid --no-pager
-    exit 1
-fi
+    # Test regular proxy
+    print_status "Testing regular proxy (port 3128)..."
+    if timeout 10 curl -x http://localhost:3128 https://www.google.com -I -s > /dev/null; then
+        print_success "Regular proxy working"
+    else
+        print_warning "Regular proxy test failed"
+    fi
+    
+    # Test SSL bumping proxy
+    print_status "Testing SSL bumping proxy (port 3129)..."
+    if timeout 10 curl -x http://localhost:3129 https://www.google.com -I -k -s > /dev/null; then
+        print_success "SSL bumping proxy working"
+    else
+        print_warning "SSL bumping proxy test failed"
+    fi
+}
 
-print_success "Squid SSL setup completed! 🎉"
-EOF
+# Function to show final information
+show_final_info() {
+    print_header "SETUP COMPLETE - IMPORTANT INFORMATION"
+    
+    echo -e "${GREEN}✅ Squid SSL Bumping Setup Completed Successfully!${NC}\n"
+    
+    echo "📋 Configuration Summary:"
+    echo "  • Regular HTTP Proxy: http://localhost:3128"
+    echo "  • SSL Bumping Proxy:  http://localhost:3129"
+    echo "  • CA Certificate:     /etc/squid/ssl_cert/squid-ca-cert.pem"
+    echo "  • SSL Database:       /var/lib/squid/ssl_db"
+    echo ""
+    
+    echo "🧪 Testing Commands:"
+    echo "  # Test regular proxy:"
+    echo "  curl -x http://localhost:3128 https://www.google.com -I -v 2>&1 | grep 'issuer'"
+    echo ""
+    echo "  # Test SSL bumping proxy:"
+    echo "  curl -x http://localhost:3129 https://www.google.com -I -v -k 2>&1 | grep -E '(issuer|subject)'"
+    echo ""
+    
+    echo "📁 Important Files:"
+    echo "  • Original config: /etc/squid/squid.conf.original"
+    echo "  • Current config:  /etc/squid/squid.conf"
+    echo "  • CA certificate:  /etc/squid/ssl_cert/squid-ca-cert.pem"
+    echo ""
+    
+    echo "⚠️  Note: To use SSL bumping with browsers, install the CA certificate"
+    echo "   (/etc/squid/ssl_cert/squid-ca-cert.pem) in the browser's trust store."
+    echo ""
+}
+
+# Main execution function
+main() {
+    print_header "SQUID SSL BUMPING SETUP SCRIPT"
+    
+    print_status "Starting automated Squid SSL bumping setup..."
+    
+    # Pre-flight checks
+    check_root
+    check_squid
+    
+    # Main setup steps
+    backup_config
+    create_ssl_directory
+    generate_ca_key
+    generate_ca_cert
+    set_permissions
+    create_ssl_database
+    add_ssl_config
+    
+    # Test and restart
+    if test_config; then
+        restart_squid
+        verify_setup
+        show_final_info
+    else
+        print_error "Setup failed due to configuration errors"
+        print_status "Restoring original configuration..."
+        sudo cp /etc/squid/squid.conf.original /etc/squid/squid.conf
+        exit 1
+    fi
+    
+    print_success "🎉 Squid SSL Bumping setup completed successfully!"
+}
+
+# Script execution
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
