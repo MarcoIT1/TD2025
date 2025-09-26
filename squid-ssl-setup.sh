@@ -389,4 +389,13 @@ main() {
     create_ssl_ca
     setup_ssl_db
     backup_config
-    configure
+    configure_squid
+    setup_firewall
+    setup_service
+    install_ca_certificate
+    verify_ssl_installation
+    show_completion
+}
+
+# Run main function
+main "$@"
