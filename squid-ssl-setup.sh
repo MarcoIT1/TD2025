@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # =============================================================================
-# SQUID SSL BUMPING SETUP SCRIPT
+# SQUID SSL BUMPING SETUP SCRIPT (Complete Installation)
 # =============================================================================
 # Description: Automated setup for Squid proxy with SSL bumping capability
 # Author: Assistant
-# Version: 1.0
+# Version: 2.0 - Now includes Squid installation
 # =============================================================================
 
 set -e  # Exit on any error
@@ -48,11 +48,83 @@ check_root() {
     fi
 }
 
-# Function to check if squid is installed
-check_squid() {
-    if ! command -v squid &> /dev/null; then
-        print_error "Squid is not installed. Please install squid first:"
-        echo "  sudo apt update && sudo apt install squid -y"
+# Function to check sudo privileges
+check_sudo() {
+    print_status "Checking sudo privileges..."
+    if sudo -n true 2>/dev/null; then
+        print_success "Sudo privileges confirmed"
+    else
+        print_status "Please enter your password for sudo access:"
+        sudo true
+        print_success "Sudo privileges confirmed"
+    fi
+}
+
+# Function to detect OS
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS=$ID
+        OS_VERSION=$VERSION_ID
+        print_status "Detected OS: $PRETTY_NAME"
+    else
+        print_error "Cannot detect operating system"
+        exit 1
+    fi
+}
+
+# Function to install squid
+install_squid() {
+    print_status "Checking if Squid is installed..."
+    
+    if command -v squid &> /dev/null; then
+        SQUID_VERSION=$(squid -v | head -n1 | awk '{print $4}')
+        print_success "Squid is already installed (Version: $SQUID_VERSION)"
+        return 0
+    fi
+    
+    print_status "Squid not found. Installing Squid..."
+    
+    case $OS in
+        ubuntu|debian)
+            print_status "Updating package list..."
+            sudo apt update
+            print_status "Installing Squid proxy server..."
+            sudo apt install squid openssl -y
+            ;;
+        centos|rhel|fedora)
+            print_status "Installing Squid proxy server..."
+            if command -v dnf &> /dev/null; then
+                sudo dnf install squid openssl -y
+            else
+                sudo yum install squid openssl -y
+            fi
+            ;;
+        *)
+            print_error "Unsupported operating system: $OS"
+            print_status "Please install squid manually and run the script again"
+            exit 1
+            ;;
+    esac
+    
+    # Verify installation
+    if command -v squid &> /dev/null; then
+        SQUID_VERSION=$(squid -v | head -n1 | awk '{print $4}')
+        print_success "Squid installed successfully (Version: $SQUID_VERSION)"
+        
+        # Enable squid service
+        print_status "Enabling Squid service..."
+        sudo systemctl enable squid
+        
+        # Start squid service if not running
+        if ! sudo systemctl is-active --quiet squid; then
+            print_status "Starting Squid service..."
+            sudo systemctl start squid
+        fi
+        
+        print_success "Squid service is enabled and running"
+    else
+        print_error "Failed to install Squid"
         exit 1
     fi
 }
@@ -194,6 +266,8 @@ verify_setup() {
     print_status "Verifying SSL bumping setup..."
     
     # Check if ports are listening
+    sleep 3  # Give squid time to fully start
+    
     if ss -tlnp | grep -q ":3128"; then
         print_success "Regular proxy listening on port 3128"
     else
@@ -221,6 +295,10 @@ verify_setup() {
     else
         print_warning "SSL bumping proxy test failed"
     fi
+    
+    # Show service status
+    print_status "Current Squid service status:"
+    sudo systemctl status squid --no-pager -l
 }
 
 # Function to show final information
@@ -253,17 +331,28 @@ show_final_info() {
     echo "⚠️  Note: To use SSL bumping with browsers, install the CA certificate"
     echo "   (/etc/squid/ssl_cert/squid-ca-cert.pem) in the browser's trust store."
     echo ""
+    
+    echo "🔧 Service Management:"
+    echo "  sudo systemctl status squid    # Check status"
+    echo "  sudo systemctl restart squid   # Restart service"
+    echo "  sudo systemctl stop squid      # Stop service"
+    echo "  sudo systemctl start squid     # Start service"
+    echo ""
 }
 
 # Main execution function
 main() {
-    print_header "SQUID SSL BUMPING SETUP SCRIPT"
+    print_header "SQUID SSL BUMPING COMPLETE SETUP SCRIPT"
     
-    print_status "Starting automated Squid SSL bumping setup..."
+    print_status "Starting complete Squid SSL bumping setup..."
     
     # Pre-flight checks
     check_root
-    check_squid
+    check_sudo
+    detect_os
+    
+    # Install squid if needed
+    install_squid
     
     # Main setup steps
     backup_config
@@ -286,7 +375,7 @@ main() {
         exit 1
     fi
     
-    print_success "🎉 Squid SSL Bumping setup completed successfully!"
+    print_success "🎉 Complete Squid SSL Bumping setup finished successfully!"
 }
 
 # Script execution
