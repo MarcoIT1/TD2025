@@ -101,6 +101,27 @@ print_success "Permissions set correctly"
 echo ""
 
 # =============================================================================
+# STEP 4.1: Initialize SSL certificate database
+# =============================================================================
+print_step "5" "Initializing SSL certificate database"
+print_status "Creating SSL certificate database directory..."
+sudo mkdir -p /var/lib/squid/ssl_db
+
+print_status "Initializing SSL certificate database..."
+if sudo /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB; then
+    print_success "SSL certificate database initialized successfully"
+else
+    print_error "Failed to initialize SSL certificate database"
+    exit 1
+fi
+
+print_status "Setting database ownership..."
+sudo chown -R proxy:proxy /var/lib/squid/ssl_db
+print_success "SSL database ownership set"
+
+echo ""
+
+# =============================================================================
 # STEP 5: Backup original configuration
 # =============================================================================
 print_step "6" "Backing up original configuration"
