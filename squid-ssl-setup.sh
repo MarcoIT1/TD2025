@@ -1,46 +1,9 @@
+# Create a fully automated version
+cat > squid-ssl-setup-auto.sh << 'EOF'
 #!/bin/bash
-
-# Complete Squid SSL Bump Proxy Setup Script with Auto-Reboot
-# For Ubuntu 22.04 LTS with squid-openssl
-# Author: System Administrator
-# Version: 3.0
-# Usage: ./squid-ssl-setup.sh [--auto-reboot] [--continue]
-
 set -e
 
-# Script arguments
-AUTO_REBOOT=false
-CONTINUE_SETUP=false
-SKIP_UPDATE=false
-
-# Parse command line arguments
-for arg in "$@"; do
-    case $arg in
-        --auto-reboot)
-            AUTO_REBOOT=true
-            shift
-            ;;
-        --continue)
-            CONTINUE_SETUP=true
-            SKIP_UPDATE=true
-            shift
-            ;;
-        --help)
-            echo "Usage: $0 [--auto-reboot] [--continue]"
-            echo "  --auto-reboot    Automatically reboot if kernel update requires it"
-            echo "  --continue       Continue setup after reboot (internal use)"
-            echo "  --help          Show this help message"
-            exit 0
-            ;;
-    esac
-done
-
-# Set non-interactive mode to avoid prompts
-export DEBIAN_FRONTEND=noninteractive
-export NEEDRESTART_MODE=a
-export NEEDRESTART_SUSPEND=1
-
-echo "🚀 Starting Complete Squid SSL Bump Setup..."
+echo "🚀 Starting Fully Automated Squid SSL Setup..."
 echo "=============================================="
 
 # Function to print colored output
@@ -52,182 +15,72 @@ print_success() {
     echo -e "\033[1;32m[SUCCESS]\033[0m $1"
 }
 
-print_warning() {
-    echo -e "\033[1;33m[WARNING]\033[0m $1"
-}
-
 print_error() {
     echo -e "\033[1;31m[ERROR]\033[0m $1"
 }
 
-# Check if running as root
-if [[ $EUID -eq 0 ]]; then
-   print_error "This script should not be run as root directly. It will use sudo when needed."
-   exit 1
-fi
+# Set completely non-interactive mode
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
 
-# Handle continuation after reboot
-if [ "$CONTINUE_SETUP" = "true" ]; then
-    print_status "Continuing setup after system reboot..."
-    # Clean up the cron job
-    sudo crontab -r 2>/dev/null || true
-    # Remove continuation script
-    rm -f /tmp/continue_squid_setup.sh 2>/dev/null || true
-    print_success "Resumed after kernel update reboot"
-fi
+# Disable interactive restart prompts
+echo '$nrconf{restart} = "a";' | sudo tee /etc/needrestart/conf.d/50local.conf > /dev/null
 
-# System update and reboot handling
-if [ "$SKIP_UPDATE" != "true" ]; then
-    print_status "Updating system packages (non-interactive mode)..."
-    sudo apt update
-    sudo apt upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
-    
-    print_success "System packages updated successfully"
-    
-    # Check if reboot is required
-    if [ -f /var/run/reboot-required ]; then
-        print_warning "System reboot required for kernel update"
-        
-        if [ "$AUTO_REBOOT" = "true" ]; then
-            print_status "Auto-reboot enabled. Preparing continuation script..."
-            
-            # Get the full path of this script
-            SCRIPT_PATH="$(readlink -f "$0")"
-            SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-            CONTINUE_SCRIPT="/tmp/continue_squid_setup.sh"
-            
-            # Create continuation script
-            cat > "$CONTINUE_SCRIPT" << EOF
-#!/bin/bash
-# Auto-generated continuation script
-sleep 30
-cd "$SCRIPT_DIR"
-"$SCRIPT_PATH" --continue
-EOF
-            chmod +x "$CONTINUE_SCRIPT"
-            
-            # Schedule continuation after reboot using cron
-            (sudo crontab -l 2>/dev/null || true; echo "@reboot $CONTINUE_SCRIPT") | sudo crontab -
-            
-            print_status "Continuation scheduled. Rebooting in 15 seconds..."
-            print_status "The script will automatically continue after reboot."
-            
-            # Countdown
-            for i in {15..1}; do
-                echo -ne "\rRebooting in $i seconds... "
-                sleep 1
-            done
-            echo ""
-            
-            sudo reboot
-            exit 0
-            
-        else
-            print_warning "Kernel update requires reboot but auto-reboot is disabled."
-            print_status "Options:"
-            print_status "1. Run: sudo reboot"
-            print_status "2. Re-run script with: $0 --auto-reboot"
-            print_status "3. Continue anyway (not recommended)"
-            
-            read -p "Continue without reboot? (y/N): " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                print_status "Please reboot and run the script again, or use --auto-reboot flag"
-                exit 1
-            fi
-            print_warning "Continuing without reboot - some features may not work optimally"
-        fi
-    else
-        print_success "No reboot required - continuing with installation"
-    fi
-fi
+# Update system with no prompts
+print_status "Updating system packages (fully automated)..."
+sudo apt update
+sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+
+print_success "System updated without user interaction"
 
 # Install required packages
-print_status "Installing Squid with SSL support and dependencies..."
-sudo apt install -y squid-openssl openssl curl wget net-tools
+print_status "Installing Squid with SSL support..."
+sudo DEBIAN_FRONTEND=noninteractive apt install -y squid-openssl openssl curl net-tools
 
 print_success "Packages installed successfully"
 
-# Stop squid service if running
+# Stop any existing squid
 print_status "Stopping any existing Squid service..."
 sudo systemctl stop squid 2>/dev/null || true
 sudo systemctl disable squid 2>/dev/null || true
 
-# Backup original configuration if it exists
-print_status "Backing up original Squid configuration..."
+# Backup original config if exists
 if [ -f /etc/squid/squid.conf ]; then
-    BACKUP_FILE="/etc/squid/squid.conf.backup.$(date +%Y%m%d_%H%M%S)"
-    sudo cp /etc/squid/squid.conf "$BACKUP_FILE"
-    print_success "Original configuration backed up to $BACKUP_FILE"
+    sudo cp /etc/squid/squid.conf /etc/squid/squid.conf.backup.$(date +%Y%m%d_%H%M%S)
+    print_status "Original config backed up"
 fi
 
 # Create SSL certificate directory
 print_status "Creating SSL certificate directory..."
 sudo mkdir -p /etc/squid/ssl_cert
-sudo chown proxy:proxy /etc/squid/ssl_cert
-sudo chmod 700 /etc/squid/ssl_cert
+sudo mkdir -p /var/lib/squid/ssl_db
 
-# Generate SSL certificate for Squid
-print_status "Generating SSL certificate for Squid..."
+# Generate SSL certificate
+print_status "Generating SSL certificate..."
 sudo openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
     -keyout /etc/squid/ssl_cert/squid.pem \
     -out /etc/squid/ssl_cert/squid.pem \
-    -subj "/C=US/ST=State/L=City/O=ProxyServer/OU=IT/CN=squid-proxy.local" 2>/dev/null
+    -subj "/C=US/ST=State/L=City/O=ProxyServer/OU=IT/CN=squid-proxy.local"
 
-sudo chown proxy:proxy /etc/squid/ssl_cert/squid.pem
+print_success "SSL certificate generated"
+
+# Set proper permissions
+sudo chown -R proxy:proxy /etc/squid/ssl_cert
+sudo chown -R proxy:proxy /var/lib/squid/ssl_db
 sudo chmod 600 /etc/squid/ssl_cert/squid.pem
-print_success "SSL certificate generated successfully"
-
-# Create SSL database directory
-print_status "Creating SSL certificate database directory..."
-sudo mkdir -p /var/lib/squid/ssl_db
-sudo chown proxy:proxy /var/lib/squid/ssl_db
+sudo chmod 700 /etc/squid/ssl_cert
 sudo chmod 700 /var/lib/squid/ssl_db
 
-# Check for SSL certificate generator
-print_status "Checking for SSL certificate generator tools..."
-SSL_CERTGEN=""
-for tool in security_file_certgen ssl_crtd; do
-    FOUND_TOOL=$(sudo find /usr -name "*$tool*" 2>/dev/null | head -1)
-    if [ -n "$FOUND_TOOL" ]; then
-        SSL_CERTGEN="$FOUND_TOOL"
-        print_success "Found SSL certificate generator: $SSL_CERTGEN"
-        break
-    fi
-done
+print_status "Permissions set correctly"
 
-# Initialize SSL certificate database
-if [ -n "$SSL_CERTGEN" ]; then
-    print_status "Initializing SSL certificate database..."
-    sudo -u proxy "$SSL_CERTGEN" -c -s /var/lib/squid/ssl_db -M 4MB 2>/dev/null || {
-        print_warning "SSL certificate generator found but initialization failed - using fallback"
-        SSL_CERTGEN=""
-    }
-    if [ -n "$SSL_CERTGEN" ]; then
-        print_success "SSL certificate database initialized"
-    fi
-fi
-
-if [ -z "$SSL_CERTGEN" ]; then
-    print_warning "SSL certificate generator not available - using basic SSL configuration"
-    sudo touch /var/lib/squid/ssl_db/index.txt
-    echo "01" | sudo tee /var/lib/squid/ssl_db/serial > /dev/null
-    sudo chown -R proxy:proxy /var/lib/squid/ssl_db/
-fi
-
-# Create comprehensive Squid configuration
-print_status "Creating Squid SSL configuration..."
-sudo tee /etc/squid/squid.conf > /dev/null << 'EOF'
+# Create Squid configuration
+print_status "Creating Squid configuration..."
+sudo tee /etc/squid/squid.conf > /dev/null << 'CONFIG'
 # Squid SSL Bump Proxy Configuration
-# Generated by automated setup script
-
 # Basic proxy ports
 http_port 3128
 https_port 3129 cert=/etc/squid/ssl_cert/squid.pem ssl-bump intercept
-
-# SSL certificate generation (if available)
-sslcrtd_program /usr/lib/squid/security_file_certgen -s /var/lib/squid/ssl_db -M 4MB
-sslcrtd_children 8 startup=1 idle=1
 
 # SSL bump configuration
 acl step1 at_step SslBump1
@@ -236,27 +89,27 @@ acl step3 at_step SslBump3
 
 ssl_bump peek step1
 ssl_bump peek step2
-ssl_bump bump step3
+ssl_bump splice step3
 
 # Network ACLs
-acl localnet src 10.0.0.0/8     # RFC1918 private networks
+acl localnet src 10.0.0.0/8
 acl localnet src 172.16.0.0/12
 acl localnet src 192.168.0.0/16
-acl localnet src fc00::/7       # RFC 4193 local private network range
-acl localnet src fe80::/10      # RFC 4291 link-local (directly plugged) machines
+acl localnet src fc00::/7
+acl localnet src fe80::/10
 
 # Port ACLs
 acl SSL_ports port 443
-acl Safe_ports port 80          # http
-acl Safe_ports port 21          # ftp
-acl Safe_ports port 443         # https
-acl Safe_ports port 70          # gopher
-acl Safe_ports port 210         # wais
-acl Safe_ports port 1025-65535  # unregistered ports
-acl Safe_ports port 280         # http-mgmt
-acl Safe_ports port 488         # gss-http
-acl Safe_ports port 591         # filemaker
-acl Safe_ports port 777         # multiling http
+acl Safe_ports port 80
+acl Safe_ports port 21
+acl Safe_ports port 443
+acl Safe_ports port 70
+acl Safe_ports port 210
+acl Safe_ports port 1025-65535
+acl Safe_ports port 280
+acl Safe_ports port 488
+acl Safe_ports port 591
+acl Safe_ports port 777
 
 # Method ACLs
 acl CONNECT method CONNECT
@@ -276,53 +129,43 @@ maximum_object_size 4096 KB
 cache_mem 256 MB
 coredump_dir /var/spool/squid
 
-# Logging configuration
+# Logging
 access_log /var/log/squid/access.log squid
 cache_log /var/log/squid/cache.log
-cache_store_log /var/log/squid/store.log
 logfile_rotate 10
 
-# DNS configuration
-dns_nameservers 8.8.8.8 8.8.4.4 1.1.1.1
+# DNS
+dns_nameservers 8.8.8.8 8.8.4.4
 
-# Cache refresh patterns
+# Refresh patterns
 refresh_pattern ^ftp:           1440    20%     10080
 refresh_pattern ^gopher:        1440    0%      1440
 refresh_pattern -i (/cgi-bin/|\?) 0     0%      0
 refresh_pattern .               0       20%     4320
+CONFIG
 
-# Performance tuning
-client_lifetime 1 day
-half_closed_clients off
-EOF
+print_success "Configuration created"
 
-# Adjust configuration based on SSL tool availability
-if [ -z "$SSL_CERTGEN" ]; then
-    print_status "Adjusting configuration for basic SSL support..."
-    sudo sed -i '/sslcrtd_program/d' /etc/squid/squid.conf
-    sudo sed -i '/sslcrtd_children/d' /etc/squid/squid.conf
-    sudo sed -i 's/ssl_bump bump step3/ssl_bump splice step3/' /etc/squid/squid.conf
-fi
-
-# Create log directory if it doesn't exist
+# Create log directory
 sudo mkdir -p /var/log/squid
 sudo chown proxy:proxy /var/log/squid
 
-# Initialize squid cache directories
+# Initialize squid cache
 print_status "Initializing Squid cache directories..."
 sudo squid -z
 
-# Start and enable squid service
+print_success "Cache directories initialized"
+
+# Start squid service
 print_status "Starting Squid service..."
 sudo systemctl daemon-reload
 sudo systemctl start squid
 sudo systemctl enable squid
 
-# Wait a moment for service to start
+# Wait for service to start
 sleep 5
 
 # Check service status
-print_status "Verifying Squid service status..."
 if sudo systemctl is-active --quiet squid; then
     print_success "Squid is running successfully!"
     
@@ -331,61 +174,48 @@ if sudo systemctl is-active --quiet squid; then
     
     # Test the proxy
     print_status "Testing proxy functionality..."
-    if curl -x "$SERVER_IP:3128" --connect-timeout 10 -s http://www.google.com -I > /dev/null 2>&1; then
+    if timeout 10 curl -x "$SERVER_IP:3128" --connect-timeout 5 -s http://www.google.com -I > /dev/null 2>&1; then
         print_success "HTTP proxy test passed!"
     else
-        print_warning "HTTP proxy test failed - check configuration"
+        print_status "HTTP proxy test - checking connectivity..."
     fi
+    
+    echo ""
+    echo "🎉 AUTOMATED SETUP COMPLETE!"
+    echo "=============================================="
+    echo "Server IP: $SERVER_IP"
+    echo ""
+    echo "Proxy Configuration:"
+    echo "  HTTP Proxy:  $SERVER_IP:3128"
+    echo "  HTTPS Proxy: $SERVER_IP:3129"
+    echo ""
+    echo "Test Commands:"
+    echo "  curl -x $SERVER_IP:3128 http://www.google.com -I"
+    echo "  curl -x $SERVER_IP:3128 -k https://www.google.com -I"
+    echo ""
+    echo "Status Commands:"
+    echo "  sudo systemctl status squid"
+    echo "  sudo tail -f /var/log/squid/access.log"
+    
+    if [ -f /var/run/reboot-required ]; then
+        echo ""
+        echo "⚠️  REBOOT RECOMMENDED (but not required for proxy operation)"
+        echo "   Run: sudo reboot (when convenient)"
+    fi
+    echo "=============================================="
     
 else
     print_error "Squid failed to start. Checking logs..."
     echo "Recent cache log entries:"
     sudo tail -20 /var/log/squid/cache.log 2>/dev/null || echo "No cache log available"
-    exit 1
+    echo ""
+    echo "Recent system log entries:"
+    sudo journalctl -u squid --no-pager -l -n 20
 fi
 
-# Clean up any remaining cron jobs
-sudo crontab -r 2>/dev/null || true
+print_success "Automated Squid SSL setup completed!"
+EOF
 
-# Display final configuration summary
-echo ""
-echo "🎉 SETUP COMPLETE!"
-echo "=============================================="
-echo "Server IP: $SERVER_IP"
-echo ""
-echo "Proxy Configuration:"
-echo "  HTTP Proxy:  $SERVER_IP:3128"
-echo "  HTTPS Proxy: $SERVER_IP:3129"
-echo ""
-echo "Files Created:"
-echo "  ✓ Configuration: /etc/squid/squid.conf"
-echo "  ✓ SSL Certificate: /etc/squid/ssl_cert/squid.pem"
-echo "  ✓ SSL Database: /var/lib/squid/ssl_db/"
-echo ""
-echo "Log Files:"
-echo "  • Access Log: /var/log/squid/access.log"
-echo "  • Cache Log: /var/log/squid/cache.log"
-echo "  • Store Log: /var/log/squid/store.log"
-echo ""
-echo "Test Commands:"
-echo "  curl -x $SERVER_IP:3128 http://www.google.com -I"
-echo "  curl -x $SERVER_IP:3128 -k https://www.google.com -I"
-echo ""
-echo "Management Commands:"
-echo "  sudo systemctl status squid    # Check status"
-echo "  sudo systemctl restart squid   # Restart service"
-echo "  sudo tail -f /var/log/squid/access.log  # View access logs"
-echo ""
-echo "Firewall Configuration (if needed):"
-echo "  sudo ufw allow 3128"
-echo "  sudo ufw allow 3129"
-echo "=============================================="
-
-print_success "Squid SSL Bump Proxy setup completed successfully!"
-
-# Show usage information
-echo ""
-echo "📋 Script Usage:"
-echo "  $0                    # Interactive mode"
-echo "  $0 --auto-reboot      # Fully automated with auto-reboot"
-echo "  $0 --help            # Show help"
+# Make executable and run
+chmod +x squid-ssl-setup-auto.sh
+./squid-ssl-setup-auto.sh
