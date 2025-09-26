@@ -17,6 +17,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Global variable for sudo keeper process
+SUDO_KEEPER_PID=""
+
 # Function to print colored output
 print_status() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -40,6 +43,34 @@ print_header() {
     echo -e "${BLUE}==============================================================================${NC}\n"
 }
 
+# Function to start sudo credential keeper
+start_sudo_keeper() {
+    # Kill any existing keeper
+    stop_sudo_keeper
+    
+    # Start background process to maintain sudo credentials
+    (
+        while true; do
+            sleep 30  # Refresh every 30 seconds
+            if ! sudo -n true 2>/dev/null; then
+                break  # Exit if sudo fails
+            fi
+        done
+    ) &
+    
+    SUDO_KEEPER_PID=$!
+    print_status "Started sudo credential keeper (PID: $SUDO_KEEPER_PID)"
+}
+
+# Function to stop sudo credential keeper
+stop_sudo_keeper() {
+    if [[ -n "$SUDO_KEEPER_PID" ]] && kill -0 "$SUDO_KEEPER_PID" 2>/dev/null; then
+        kill "$SUDO_KEEPER_PID" 2>/dev/null || true
+        print_status "Stopped sudo credential keeper"
+        SUDO_KEEPER_PID=""
+    fi
+}
+
 # Function to check if running as root
 check_root() {
     if [[ $EUID -eq 0 ]]; then
@@ -48,40 +79,52 @@ check_root() {
     fi
 }
 
-# Function to maintain sudo credentials
-maintain_sudo() {
-    # Start a background process to refresh sudo credentials
-    while true; do
-        sleep 60
-        sudo -n true 2>/dev/null || break
-    done &
-    SUDO_PID=$!
-    
-    # Clean up function
-    cleanup_sudo() {
-        if [[ -n $SUDO_PID ]]; then
-            kill $SUDO_PID 2>/dev/null || true
-        fi
-    }
-    
-    # Set trap to clean up on exit
-    trap cleanup_sudo EXIT
-}
-
-# Function to check sudo privileges and maintain them
+# Function to check sudo privileges and start keeper
 check_sudo() {
     print_status "Checking sudo privileges..."
+    
+    # First check if sudo works without password
     if sudo -n true 2>/dev/null; then
-        print_success "Sudo privileges confirmed"
+        print_success "Sudo privileges confirmed (cached)"
     else
         print_status "Please enter your password for sudo access:"
-        sudo true
-        print_success "Sudo privileges confirmed"
+        if sudo true; then
+            print_success "Sudo privileges confirmed"
+        else
+            print_error "Failed to obtain sudo privileges"
+            exit 1
+        fi
     fi
     
-    # Start maintaining sudo credentials
-    maintain_sudo
-    print_status "Sudo credentials will be maintained automatically"
+    # Start the sudo keeper
+    start_sudo_keeper
+    
+    # Set trap to clean up on exit
+    trap 'stop_sudo_keeper' EXIT INT TERM
+}
+
+# Function to execute sudo command with retry
+sudo_exec() {
+    local retries=3
+    local count=0
+    
+    while [[ $count -lt $retries ]]; do
+        if sudo -n "$@" 2>/dev/null; then
+            return 0
+        else
+            count=$((count + 1))
+            if [[ $count -lt $retries ]]; then
+                print_warning "Sudo command failed, refreshing credentials... (attempt $count/$retries)"
+                sudo true 2>/dev/null || {
+                    print_error "Failed to refresh sudo credentials"
+                    return 1
+                }
+            else
+                print_error "Sudo command failed after $retries attempts: $*"
+                return 1
+            fi
+        fi
+    done
 }
 
 # Function to detect OS
@@ -112,16 +155,16 @@ install_squid() {
     case $OS in
         ubuntu|debian)
             print_status "Updating package list..."
-            sudo -n apt update
+            sudo_exec apt update
             print_status "Installing Squid proxy server..."
-            sudo -n apt install squid openssl -y
+            sudo_exec apt install squid openssl -y
             ;;
         centos|rhel|fedora)
             print_status "Installing Squid proxy server..."
             if command -v dnf &> /dev/null; then
-                sudo -n dnf install squid openssl -y
+                sudo_exec dnf install squid openssl -y
             else
-                sudo -n yum install squid openssl -y
+                sudo_exec yum install squid openssl -y
             fi
             ;;
         *)
@@ -138,12 +181,12 @@ install_squid() {
         
         # Enable squid service
         print_status "Enabling Squid service..."
-        sudo -n systemctl enable squid
+        sudo_exec systemctl enable squid
         
         # Start squid service if not running
-        if ! sudo -n systemctl is-active --quiet squid; then
+        if ! sudo_exec systemctl is-active --quiet squid; then
             print_status "Starting Squid service..."
-            sudo -n systemctl start squid
+            sudo_exec systemctl start squid
         fi
         
         print_success "Squid service is enabled and running"
@@ -157,7 +200,7 @@ install_squid() {
 backup_config() {
     print_status "Backing up original squid configuration..."
     if [[ ! -f /etc/squid/squid.conf.original ]]; then
-        sudo -n cp /etc/squid/squid.conf /etc/squid/squid.conf.original
+        sudo_exec cp /etc/squid/squid.conf /etc/squid/squid.conf.original
         print_success "Configuration backed up to /etc/squid/squid.conf.original"
     else
         print_warning "Backup already exists at /etc/squid/squid.conf.original"
@@ -167,7 +210,7 @@ backup_config() {
 # Function to create SSL certificate directory
 create_ssl_directory() {
     print_status "Creating SSL certificate directory..."
-    sudo -n mkdir -p /etc/squid/ssl_cert
+    sudo_exec mkdir -p /etc/squid/ssl_cert
     print_success "SSL certificate directory created"
 }
 
@@ -175,7 +218,7 @@ create_ssl_directory() {
 generate_ca_key() {
     print_status "Generating CA private key (4096 bits)..."
     if [[ ! -f /etc/squid/ssl_cert/squid-ca-key.pem ]]; then
-        sudo -n openssl genrsa -out /etc/squid/ssl_cert/squid-ca-key.pem 4096
+        sudo_exec openssl genrsa -out /etc/squid/ssl_cert/squid-ca-key.pem 4096
         print_success "CA private key generated"
     else
         print_warning "CA private key already exists"
@@ -186,7 +229,7 @@ generate_ca_key() {
 generate_ca_cert() {
     print_status "Generating CA certificate..."
     if [[ ! -f /etc/squid/ssl_cert/squid-ca-cert.pem ]]; then
-        sudo -n openssl req -new -x509 -days 3650 \
+        sudo_exec openssl req -new -x509 -days 3650 \
             -key /etc/squid/ssl_cert/squid-ca-key.pem \
             -out /etc/squid/ssl_cert/squid-ca-cert.pem \
             -utf8 \
@@ -200,20 +243,20 @@ generate_ca_cert() {
 # Function to set proper permissions
 set_permissions() {
     print_status "Setting proper permissions..."
-    sudo -n chown -R proxy:proxy /etc/squid/ssl_cert/
-    sudo -n chmod 400 /etc/squid/ssl_cert/squid-ca-key.pem
-    sudo -n chmod 444 /etc/squid/ssl_cert/squid-ca-cert.pem
+    sudo_exec chown -R proxy:proxy /etc/squid/ssl_cert/
+    sudo_exec chmod 400 /etc/squid/ssl_cert/squid-ca-key.pem
+    sudo_exec chmod 444 /etc/squid/ssl_cert/squid-ca-cert.pem
     print_success "Permissions set correctly"
 }
 
 # Function to create SSL database
 create_ssl_database() {
     print_status "Creating SSL certificate database..."
-    sudo -n mkdir -p /var/lib/squid/ssl_db
+    sudo_exec mkdir -p /var/lib/squid/ssl_db
     
     if [[ ! -f /var/lib/squid/ssl_db/index.txt ]]; then
-        sudo -n /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB
-        sudo -n chown -R proxy:proxy /var/lib/squid/ssl_db
+        sudo_exec /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB
+        sudo_exec chown -R proxy:proxy /var/lib/squid/ssl_db
         print_success "SSL database created and initialized"
     else
         print_warning "SSL database already exists"
@@ -230,7 +273,7 @@ add_ssl_config() {
         return 0
     fi
     
-    sudo -n tee -a /etc/squid/squid.conf << 'EOF'
+    sudo_exec tee -a /etc/squid/squid.conf << 'EOF'
 
 # SSL Bump Configuration
 http_port 3129 ssl-bump generate-host-certificates=on dynamic_cert_mem_cache_size=4MB cert=/etc/squid/ssl_cert/squid-ca-cert.pem key=/etc/squid/ssl_cert/squid-ca-key.pem
@@ -256,7 +299,7 @@ EOF
 # Function to test configuration
 test_config() {
     print_status "Testing squid configuration..."
-    if sudo -n squid -k parse; then
+    if sudo_exec squid -k parse; then
         print_success "Configuration syntax is valid"
         return 0
     else
@@ -268,12 +311,12 @@ test_config() {
 # Function to restart squid service
 restart_squid() {
     print_status "Restarting squid service..."
-    if sudo -n systemctl restart squid; then
+    if sudo_exec systemctl restart squid; then
         print_success "Squid service restarted successfully"
         sleep 2
         
         # Check service status
-        if sudo -n systemctl is-active --quiet squid; then
+        if sudo_exec systemctl is-active --quiet squid; then
             print_success "Squid service is running"
         else
             print_error "Squid service failed to start"
@@ -322,7 +365,7 @@ verify_setup() {
     
     # Show service status
     print_status "Current Squid service status:"
-    sudo -n systemctl status squid --no-pager -l
+    sudo_exec systemctl status squid --no-pager -l
 }
 
 # Function to show final information
@@ -372,7 +415,7 @@ main() {
     
     # Pre-flight checks
     check_root
-    check_sudo
+    check_sudo  # This now starts the sudo keeper
     detect_os
     
     # Install squid if needed
@@ -395,7 +438,7 @@ main() {
     else
         print_error "Setup failed due to configuration errors"
         print_status "Restoring original configuration..."
-        sudo -n cp /etc/squid/squid.conf.original /etc/squid/squid.conf
+        sudo_exec cp /etc/squid/squid.conf.original /etc/squid/squid.conf
         exit 1
     fi
     
