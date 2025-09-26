@@ -101,28 +101,45 @@ print_success "Permissions set correctly"
 echo ""
 
 # =============================================================================
-# STEP 4.1: Initialize SSL certificate database
+# STEP 5: Initialize SSL certificate database
 # =============================================================================
 print_step "5" "Initializing SSL certificate database"
-print_status "Creating SSL certificate database directory..."
-sudo mkdir -p /var/lib/squid/ssl_db
+
+print_status "Creating SSL certificate database parent directory..."
+sudo mkdir -p /var/lib/squid
+sudo chown -R proxy:proxy /var/lib/squid
 
 print_status "Initializing SSL certificate database..."
-if sudo /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB; then
+if sudo -u proxy /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB; then
     print_success "SSL certificate database initialized successfully"
 else
-    print_error "Failed to initialize SSL certificate database"
-    exit 1
+    print_error "Failed to initialize as proxy user, trying as root..."
+    
+    if sudo /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB; then
+        print_status "Setting database ownership..."
+        sudo chown -R proxy:proxy /var/lib/squid/ssl_db
+        sudo chmod -R 755 /var/lib/squid/ssl_db
+        print_success "SSL certificate database initialized successfully"
+    else
+        print_error "Failed to initialize SSL certificate database"
+        exit 1
+    fi
 fi
 
-print_status "Setting database ownership..."
-sudo chown -R proxy:proxy /var/lib/squid/ssl_db
-print_success "SSL database ownership set"
+print_status "Verifying SSL database..."
+if [ -d "/var/lib/squid/ssl_db" ] && [ "$(ls -A /var/lib/squid/ssl_db 2>/dev/null)" ]; then
+    print_success "SSL database created and populated"
+    echo "Database contents:"
+    ls -la /var/lib/squid/ssl_db/ | head -3
+else
+    print_error "SSL database verification failed"
+    exit 1
+fi
 
 echo ""
 
 # =============================================================================
-# STEP 5: Backup original configuration
+# STEP 6: Backup original configuration
 # =============================================================================
 print_step "6" "Backing up original configuration"
 if [ ! -f /etc/squid/squid.conf.original ]; then
@@ -136,7 +153,7 @@ fi
 echo ""
 
 # =============================================================================
-# STEP 6: Add SSL bump configuration
+# STEP 7: Add SSL bump configuration
 # =============================================================================
 print_step "7" "Adding SSL bump configuration"
 print_status "Adding SSL bump configuration to squid.conf..."
@@ -164,7 +181,7 @@ print_success "SSL bump configuration added"
 echo ""
 
 # =============================================================================
-# STEP 7: Test configuration
+# STEP 8: Test configuration
 # =============================================================================
 print_step "8" "Testing configuration"
 print_status "Validating squid configuration..."
@@ -180,7 +197,7 @@ fi
 echo ""
 
 # =============================================================================
-# STEP 8: Restart squid
+# STEP 9: Restart squid
 # =============================================================================
 print_step "9" "Restarting Squid service"
 print_status "Restarting squid service..."
@@ -197,7 +214,7 @@ fi
 echo ""
 
 # =============================================================================
-# STEP 9: Verify status
+# STEP 10: Verify status
 # =============================================================================
 print_step "10" "Verifying installation"
 print_status "Checking squid service status..."
