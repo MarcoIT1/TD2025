@@ -101,28 +101,7 @@ print_success "Permissions set correctly"
 echo ""
 
 # =============================================================================
-# STEP 5: Create SSL database directory
-# =============================================================================
-print_step "5" "Creating SSL certificate database"
-print_status "Creating SSL certificate database..."
-sudo mkdir -p /var/lib/squid/ssl_db
-
-print_status "Initializing SSL certificate database..."
-if sudo /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB; then
-    print_success "SSL certificate database created successfully"
-else
-    print_error "Failed to create SSL certificate database"
-    exit 1
-fi
-
-print_status "Setting database ownership..."
-sudo chown -R proxy:proxy /var/lib/squid/ssl_db
-print_success "SSL database ownership set"
-
-echo ""
-
-# =============================================================================
-# STEP 6: Backup original configuration
+# STEP 5: Backup original configuration
 # =============================================================================
 print_step "6" "Backing up original configuration"
 if [ ! -f /etc/squid/squid.conf.original ]; then
@@ -136,7 +115,7 @@ fi
 echo ""
 
 # =============================================================================
-# STEP 7: Add SSL bump configuration
+# STEP 6: Add SSL bump configuration
 # =============================================================================
 print_step "7" "Adding SSL bump configuration"
 print_status "Adding SSL bump configuration to squid.conf..."
@@ -164,7 +143,7 @@ print_success "SSL bump configuration added"
 echo ""
 
 # =============================================================================
-# STEP 8: Test configuration
+# STEP 7: Test configuration
 # =============================================================================
 print_step "8" "Testing configuration"
 print_status "Validating squid configuration..."
@@ -180,7 +159,7 @@ fi
 echo ""
 
 # =============================================================================
-# STEP 9: Restart squid
+# STEP 8: Restart squid
 # =============================================================================
 print_step "9" "Restarting Squid service"
 print_status "Restarting squid service..."
@@ -197,7 +176,7 @@ fi
 echo ""
 
 # =============================================================================
-# STEP 10: Verify status
+# STEP 9: Verify status
 # =============================================================================
 print_step "10" "Verifying installation"
 print_status "Checking squid service status..."
